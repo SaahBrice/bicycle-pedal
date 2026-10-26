@@ -17,4 +17,6 @@ target_sources(app PRIVATE
   src/communication/uart.c
   src/timing/timing.c
   src/activity/activity.c
+  src/activity/button/button.c
+  src/activity/gpio/gpio.c
 )

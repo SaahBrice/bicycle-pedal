@@ -1,5 +1,4 @@
 #include "communication/communication.h"
-#include "activity/activity.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -49,7 +48,6 @@ static void pedal_uart_isr(const struct device *device, void *user_data)
     while (uart_irq_tx_ready(device)) {
         if (tx_tail == tx_head) {
             uart_irq_tx_disable(device);
-            pedal_activity_uart_idle();
             break;
         }
         const size_t available = (tx_head - tx_tail) & PEDAL_UART_TX_MASK;
@@ -145,7 +143,6 @@ int pedal_communication_send(PedalMessageLevel level, const char *message)
     tx_head = (tx_head + 1u) & PEDAL_UART_TX_MASK;
     tx_queue[tx_head] = '\n';
     tx_head = (tx_head + 1u) & PEDAL_UART_TX_MASK;
-    pedal_activity_uart_start();
     uart_irq_tx_enable(pedal_uart);
     irq_unlock(key);
     return 0;

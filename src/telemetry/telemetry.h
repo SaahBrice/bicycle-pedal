@@ -36,11 +36,10 @@ int pedal_telemetry_timing_pair(const char *scope, uint32_t revolution,
 // Report how many samples missed their 200 Hz release deadline.
 int pedal_telemetry_pacing(uint32_t late_samples, uint32_t total_samples);
 
-// Report replay counts and average timing for both algorithms after processing.
-int pedal_telemetry_final(uint32_t samples, uint32_t revolutions,
-                          const PedalTimingStats *standard_all,
-                          const PedalTimingStats *standard_revolutions,
-                          const PedalTimingStats *simplified_all,
-                          const PedalTimingStats *simplified_revolutions);
+// Report one selected algorithm; optional setup timing is separate from samples.
+int pedal_telemetry_final(const char *algorithm, uint32_t samples,
+                          uint32_t revolutions, const PedalTimingStats *all,
+                          const PedalTimingStats *full,
+                          const PedalTimingStats *setup);
 
 #endif // PEDAL_TELEMETRY_H

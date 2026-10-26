@@ -307,33 +307,20 @@ static int report_algorithm(const char *name, uint32_t revolutions,
                           full_summary.total_us / revolutions);
 }
 
-/* ------------------------------------------------------------------ */
-/* Creates: int pedal_telemetry_final(uint32_t samples,               */
-/*                                    uint32_t revolutions,           */
-/*                                    const PedalTimingStats *... )   */
-/*                                                                    */
-/* Description:                                                       */
-/*   Sends only the requested replay counts and computation averages */
-/*   after all samples have been processed.                           */
-/*                                                                    */
-/* Input:                                                             */
-/*   samples - number of processed samples                            */
-/*   revolutions - number of complete revolutions                     */
-/*   standard_all - standard timing across all samples               */
-/*   standard_revolutions - standard timing in complete turns         */
-/*   simplified_all - simplified timing across all samples           */
-/*   simplified_revolutions - simplified timing in complete turns     */
-/*                                                                    */
-/* Output: int - 0 or negative timing or communication code          */
-/* ------------------------------------------------------------------ */
-int pedal_telemetry_final(uint32_t samples, uint32_t revolutions,
-                          const PedalTimingStats *standard_all,
-                          const PedalTimingStats *standard_revolutions,
-                          const PedalTimingStats *simplified_all,
-                          const PedalTimingStats *simplified_revolutions)
+/*
+ * Input: algorithm - selected mode; samples/revolutions - completed replay.
+ *        all/full - sample timing for this mode only, excluding setup.
+ *        setup - simplified coefficient preparation timing, or NULL for standard.
+ * Output: counts and computation averages for only the selected algorithm.
+ *         When present, setup is separate and included in total computation.
+ * Returns: 0 or a negative timing, formatting, or communication error.
+ */
+int pedal_telemetry_final(const char *algorithm, uint32_t samples,
+                          uint32_t revolutions, const PedalTimingStats *all,
+                          const PedalTimingStats *full,
+                          const PedalTimingStats *setup)
 {
-    if (standard_all == NULL || standard_revolutions == NULL ||
-        simplified_all == NULL || simplified_revolutions == NULL) {
+    if (algorithm == NULL || all == NULL || full == NULL) {
         return -EINVAL;
     }
     int rc = send_formatted(PEDAL_MESSAGE_PLAIN,
@@ -344,11 +331,29 @@ int pedal_telemetry_final(uint32_t samples, uint32_t revolutions,
     if (rc < 0) {
         return rc;
     }
-    rc = report_algorithm("standard", revolutions, standard_all,
-                          standard_revolutions);
+    rc = report_algorithm(algorithm, revolutions, all, full);
+    if (rc < 0 || setup == NULL) {
+        return rc;
+    }
+    PedalTimingSummary setup_summary;
+    rc = pedal_timing_summarize(setup, &setup_summary);
     if (rc < 0) {
         return rc;
     }
-    return report_algorithm("simplified", revolutions, simplified_all,
-                            simplified_revolutions);
+    rc = send_formatted(PEDAL_MESSAGE_PLAIN,
+        "  coefficient setup: %llu [cycles], %.3f [us]",
+        (unsigned long long)setup_summary.total_cycles, setup_summary.total_us);
+    if (rc < 0) {
+        return rc;
+    }
+    PedalTimingStats combined = *all;
+    pedal_timing_merge(&combined, setup);
+    PedalTimingSummary total;
+    rc = pedal_timing_summarize(&combined, &total);
+    if (rc < 0) {
+        return rc;
+    }
+    return send_formatted(PEDAL_MESSAGE_PLAIN,
+        "  total computation including setup: %llu [cycles], %.3f [us]",
+        (unsigned long long)total.total_cycles, total.total_us);
 }

@@ -1,4 +1,5 @@
 #include "activity/activity.h"
+#include "activity/gpio/gpio.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -6,14 +7,15 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 
-#define PEDAL_PROCESSING_BLINK_MS 100u // [ms] LED0 half-period during replay.
-#define PEDAL_REVOLUTION_PULSE_MS 120u // [ms] Visible LED1 revolution pulse.
-#define PEDAL_UART_PULSE_MS 120u       // [ms] Minimum LED3 pulse after UART drains.
+#define PEDAL_PROCESSING_BLINK_MS 100u // [ms] Selected mode LED half-period during replay.
+#define PEDAL_REVOLUTION_PULSE_MS 120u // [ms] Visible LED2 revolution pulse.
+#define PEDAL_TABLE_PULSE_MS 120u       // [ms] LED3 pulse after a complete table.
 
-static const struct gpio_dt_spec processing_led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const struct gpio_dt_spec revolution_led = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-static const struct gpio_dt_spec uart_led = GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios);
-static bool processing;
+static const struct gpio_dt_spec standard_led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static const struct gpio_dt_spec simplified_led = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+static const struct gpio_dt_spec *processing_led = &standard_led;
+static const struct gpio_dt_spec revolution_led = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+static const struct gpio_dt_spec table_led = GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios);
 static bool processing_led_on;
 static bool initialized;
 static struct k_work_sync processing_stop_sync;
@@ -22,11 +24,11 @@ static struct k_work_sync processing_stop_sync;
 /* Creates: static void processing_blink(struct k_work *work)         */
 /*                                                                    */
 /* Description:                                                       */
-/*   Toggles LED0 while replay is active and schedules its next edge. */
+/*   Toggles the selected mode LED during replay and schedules its next edge. */
 /*                                                                    */
 /* Input: work - owning delayable work item                           */
 /*                                                                    */
-/* Output: void - updates LED0 and its work schedule                  */
+/* Output: void - updates the mode LED and its work schedule                  */
 /* ------------------------------------------------------------------ */
 static void processing_blink(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(processing_work, processing_blink);
@@ -34,11 +36,8 @@ K_WORK_DELAYABLE_DEFINE(processing_work, processing_blink);
 static void processing_blink(struct k_work *work)
 {
     (void)work;
-    if (!processing) {
-        return;
-    }
     processing_led_on = !processing_led_on;
-    gpio_pin_set_dt(&processing_led, processing_led_on);
+    gpio_pin_set_dt(processing_led, processing_led_on);
     k_work_reschedule(&processing_work, K_MSEC(PEDAL_PROCESSING_BLINK_MS));
 }
 
@@ -46,11 +45,11 @@ static void processing_blink(struct k_work *work)
 /* Creates: static void revolution_pulse_end(struct k_work *work)    */
 /*                                                                    */
 /* Description:                                                       */
-/*   Turns LED1 off after the visible revolution pulse.              */
+/*   Turns LED2 off after the visible revolution pulse.              */
 /*                                                                    */
 /* Input: work - owning delayable work item                           */
 /*                                                                    */
-/* Output: void - turns LED1 off                                      */
+/* Output: void - turns LED2 off                                      */
 /* ------------------------------------------------------------------ */
 static void revolution_pulse_end(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(revolution_work, revolution_pulse_end);
@@ -62,29 +61,29 @@ static void revolution_pulse_end(struct k_work *work)
 }
 
 /* ------------------------------------------------------------------ */
-/* Creates: static void uart_pulse_end(struct k_work *work)          */
+/* Creates: static void table_pulse_end(struct k_work *work)          */
 /*                                                                    */
 /* Description:                                                       */
-/*   Turns LED3 off shortly after the UART output queue drains.      */
+/*   Turns LED3 off after the table-completion pulse.      */
 /*                                                                    */
 /* Input: work - owning delayable work item                           */
 /*                                                                    */
 /* Output: void - turns LED3 off                                      */
 /* ------------------------------------------------------------------ */
-static void uart_pulse_end(struct k_work *work);
-K_WORK_DELAYABLE_DEFINE(uart_work, uart_pulse_end);
+static void table_pulse_end(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(table_work, table_pulse_end);
 
-static void uart_pulse_end(struct k_work *work)
+static void table_pulse_end(struct k_work *work)
 {
     (void)work;
-    gpio_pin_set_dt(&uart_led, 0);
+    gpio_pin_set_dt(&table_led, 0);
 }
 
 /* ------------------------------------------------------------------ */
 /* Creates: int pedal_activity_init(void)                             */
 /*                                                                    */
 /* Description:                                                       */
-/*   Checks and configures the three board LEDs as inactive outputs.  */
+/*   Checks and configures all four board LEDs as inactive outputs.  */
 /*                                                                    */
 /* Input: none                                                         */
 /*                                                                    */
@@ -92,12 +91,21 @@ static void uart_pulse_end(struct k_work *work)
 /* ------------------------------------------------------------------ */
 int pedal_activity_init(void)
 {
-    if (!gpio_is_ready_dt(&processing_led) ||
+    int rc = pedal_gpio_cleanup();
+    if (rc < 0) {
+        return rc;
+    }
+    if (!gpio_is_ready_dt(&standard_led) ||
+        !gpio_is_ready_dt(&simplified_led) ||
         !gpio_is_ready_dt(&revolution_led) ||
-        !gpio_is_ready_dt(&uart_led)) {
+        !gpio_is_ready_dt(&table_led)) {
         return -ENODEV;
     }
-    int rc = gpio_pin_configure_dt(&processing_led, GPIO_OUTPUT_INACTIVE);
+    rc = gpio_pin_configure_dt(&standard_led, GPIO_OUTPUT_INACTIVE);
+    if (rc < 0) {
+        return rc;
+    }
+    rc = gpio_pin_configure_dt(&simplified_led, GPIO_OUTPUT_INACTIVE);
     if (rc < 0) {
         return rc;
     }
@@ -105,7 +113,7 @@ int pedal_activity_init(void)
     if (rc < 0) {
         return rc;
     }
-    rc = gpio_pin_configure_dt(&uart_led, GPIO_OUTPUT_INACTIVE);
+    rc = gpio_pin_configure_dt(&table_led, GPIO_OUTPUT_INACTIVE);
     if (rc < 0) {
         return rc;
     }
@@ -114,23 +122,24 @@ int pedal_activity_init(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Creates: void pedal_activity_processing_start(void)                */
+/* Creates: void pedal_activity_processing_start(bool simplified)                */
 /*                                                                    */
 /* Description:                                                       */
-/*   Starts a visible LED0 blink across the sample replay.           */
+/*   Blinks LED0 for standard or LED1 for simplified replay.           */
 /*                                                                    */
-/* Input: none                                                         */
+/* Input: simplified - true for LED1; false for LED0                   */
 /*                                                                    */
-/* Output: void - lights LED0 and schedules blinking                  */
+/* Output: void - selects the mode LED and schedules blinking          */
 /* ------------------------------------------------------------------ */
-void pedal_activity_processing_start(void)
+void pedal_activity_processing_start(bool simplified)
 {
-    if (!initialized) {
+    if (!PEDAL_ACTIVITY_LEDS_ENABLED || !initialized) {
         return;
     }
-    processing = true;
+    pedal_activity_processing_stop();
+    processing_led = simplified ? &simplified_led : &standard_led;
     processing_led_on = true;
-    gpio_pin_set_dt(&processing_led, 1);
+    gpio_pin_set_dt(processing_led, 1);
     k_work_reschedule(&processing_work, K_MSEC(PEDAL_PROCESSING_BLINK_MS));
 }
 
@@ -138,74 +147,51 @@ void pedal_activity_processing_start(void)
 /* Creates: void pedal_activity_processing_stop(void)                 */
 /*                                                                    */
 /* Description:                                                       */
-/*   Stops the LED0 blink when sample replay ends.                    */
+/*   Stops mode blinking when replay ends or switches mode.                    */
 /*                                                                    */
 /* Input: none                                                         */
 /*                                                                    */
-/* Output: void - cancels blinking and turns LED0 off                 */
+/* Output: void - cancels blinking and turns both mode LEDs off                 */
 /* ------------------------------------------------------------------ */
 void pedal_activity_processing_stop(void)
 {
-    if (!initialized) {
+    if (!PEDAL_ACTIVITY_LEDS_ENABLED || !initialized) {
         return;
     }
-    processing = false;
     k_work_cancel_delayable_sync(&processing_work, &processing_stop_sync);
     processing_led_on = false;
-    gpio_pin_set_dt(&processing_led, 0);
+    gpio_pin_set_dt(&standard_led, 0);
+    gpio_pin_set_dt(&simplified_led, 0);
 }
 
 /* ------------------------------------------------------------------ */
 /* Creates: void pedal_activity_revolution(void)                      */
 /*                                                                    */
 /* Description:                                                       */
-/*   Starts or extends a visible LED1 pulse for a completed turn.    */
+/*   Starts or extends a visible LED2 pulse for a completed turn.    */
 /*                                                                    */
 /* Input: none                                                         */
 /*                                                                    */
-/* Output: void - lights LED1 and schedules its turn-off              */
+/* Output: void - lights LED2 and schedules its turn-off              */
 /* ------------------------------------------------------------------ */
 void pedal_activity_revolution(void)
 {
-    if (!initialized) {
+    if (!PEDAL_ACTIVITY_LEDS_ENABLED || !initialized) {
         return;
     }
     gpio_pin_set_dt(&revolution_led, 1);
     k_work_reschedule(&revolution_work, K_MSEC(PEDAL_REVOLUTION_PULSE_MS));
 }
 
-/* ------------------------------------------------------------------ */
-/* Creates: void pedal_activity_uart_start(void)                      */
-/*                                                                    */
-/* Description:                                                       */
-/*   Lights LED3 when output is queued for interrupt-driven UART.    */
-/*                                                                    */
-/* Input: none                                                         */
-/*                                                                    */
-/* Output: void - cancels turn-off and lights LED3                    */
-/* ------------------------------------------------------------------ */
-void pedal_activity_uart_start(void)
+/*
+ * Pulse LED3 once for a completed lookup table, independently of UART traffic.
+ * The next replay may start while this short completion pulse is visible.
+ */
+void pedal_activity_table_complete(void)
 {
-    if (!initialized) {
+    if (!PEDAL_ACTIVITY_LEDS_ENABLED || !initialized) {
         return;
     }
-    k_work_cancel_delayable(&uart_work);
-    gpio_pin_set_dt(&uart_led, 1);
-}
-
-/* ------------------------------------------------------------------ */
-/* Creates: void pedal_activity_uart_idle(void)                       */
-/*                                                                    */
-/* Description:                                                       */
-/*   Keeps LED3 visible briefly after the UART software queue drains. */
-/*                                                                    */
-/* Input: none                                                         */
-/*                                                                    */
-/* Output: void - schedules LED3 turn-off                             */
-/* ------------------------------------------------------------------ */
-void pedal_activity_uart_idle(void)
-{
-    if (initialized) {
-        k_work_reschedule(&uart_work, K_MSEC(PEDAL_UART_PULSE_MS));
-    }
+    gpio_pin_set_dt(&table_led, 1);
+    k_work_reschedule(&table_work, K_MSEC(PEDAL_TABLE_PULSE_MS));
 }
