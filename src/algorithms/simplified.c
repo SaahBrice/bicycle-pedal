@@ -10,8 +10,7 @@ static const float TAYLOR_TWENTY_FOURTH = 0.041666667f;
 static const float TAYLOR_ONE_HUNDRED_TWENTIETH = 0.008333333f;
 
 /* Reduce to |r| <= pi/4, then use cos(r) through r^4 and sin(r) through r^5.
- * The quarter-turn mapping restores the signs and swaps sin/cos as needed.
- * These approximations run only while preparing fixed coefficients.
+ * The quarter-turn mapping restores the signs and swaps sin/cos if needed.
  */
 static void approximate_sincos(float angle, float *sine, float *cosine)
 {
@@ -66,7 +65,7 @@ static void approximate_sincos(float angle, float *sine, float *cosine)
 int pedal_simplified_prepare(const PedalCalibration *cal,
                              PedalSimplifiedCoefficients *coeff)
 {
-    // The fixed geometry and excitation must be usable before preparing coefficients.
+    // verify if fixed geometry and excitation are usable
     if (cal == NULL || coeff == NULL || cal->k_cal_b1 <= 0.0f ||
         cal->k_cal_b2 <= 0.0f || cal->delta_b1_m <= 0.0f ||
         cal->delta_b2_m <= 0.0f || cal->excitation_V <= 0.0f ||
@@ -74,7 +73,7 @@ int pedal_simplified_prepare(const PedalCalibration *cal,
         !isfinite(cal->imu_roll_rad) || !isfinite(cal->imu_pitch_rad)) {
         return -EINVAL;
     }
-    // Approximate each fixed installation angle only once during preparation.
+    // Approximate each fixed installation angle .
     float sin_alpha, cos_alpha, sin_pitch, cos_pitch, sin_roll, cos_roll;
     approximate_sincos(cal->alpha_rad, &sin_alpha, &cos_alpha);
     approximate_sincos(cal->imu_pitch_rad, &sin_pitch, &cos_pitch);
@@ -129,13 +128,13 @@ int pedal_simplified_process(const PedalSensorSample *sample,
                              const PedalSimplifiedCoefficients *coeff,
                              PedalResult *result)
 {
-    // Prepared bridge gains are valid only for their recorded excitation voltage.
+    //  bridge gains are valid if false.
     if (sample == NULL || coeff == NULL || result == NULL ||
         !isfinite(sample->excitation_V) ||
         fabsf(sample->excitation_V - coeff->excitation_V) > 1e-6f) {
         return -EINVAL;
     }
-    // Reject non-finite bridge and gyro readings before multiplying them.
+    // Reject non-finite bridge and gyro readings.
     for (unsigned int i = 0; i < 4; ++i) {
         if (!isfinite(sample->half_bridge_uV[i])) {
             return -EINVAL;
@@ -157,7 +156,7 @@ int pedal_simplified_process(const PedalSensorSample *sample,
     const float omega_rad_s = coeff->axis_x * sample->gyro_rad_s[0] +
                               coeff->axis_y * sample->gyro_rad_s[1] +
                               coeff->axis_z * sample->gyro_rad_s[2];
-    // Keep invalid or overflowing calculations out of the reported result.
+    // Keep invalid or overflowing calculations out of the result.
     if (!isfinite(torque_Nm) || !isfinite(omega_rad_s) ||
         !isfinite(torque_Nm * omega_rad_s)) {
         return -EINVAL;
