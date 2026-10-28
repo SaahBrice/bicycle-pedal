@@ -45,6 +45,20 @@ int pedal_timing_init(void)
     return 0;
 }
 
+void pedal_timing_suspend(void)
+{
+    DWT->CTRL &= ~DWT_CTRL_CYCCNTENA_Msk;
+#if defined(DCB_DEMCR_TRCENA_Msk)
+    if ((DCB->DHCSR & DCB_DHCSR_C_DEBUGEN_Msk) == 0u) {
+        DCB->DEMCR &= ~DCB_DEMCR_TRCENA_Msk;
+    }
+#else
+    if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) == 0u) {
+        CoreDebug->DEMCR &= ~CoreDebug_DEMCR_TRCENA_Msk;
+    }
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Creates: PedalTimingStamp pedal_timing_begin(void)                  */
 /*                                                                    */
@@ -61,6 +75,12 @@ int pedal_timing_init(void)
 PedalTimingStamp pedal_timing_begin(void)
 {
     const unsigned int key = irq_lock();
+    // Deep idle can reset the trace gate as well as the cycle-counter enable.
+#if defined(DCB_DEMCR_TRCENA_Msk)
+    DCB->DEMCR |= DCB_DEMCR_TRCENA_Msk;
+#else
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+#endif
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     return (PedalTimingStamp) {
         .start_cycles = DWT->CYCCNT,

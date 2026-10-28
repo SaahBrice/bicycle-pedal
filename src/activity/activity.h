@@ -5,7 +5,7 @@
 
 // Set to 0  to keep all LEDs off and disable their scheduled work.
 #ifndef PEDAL_ACTIVITY_LEDS_ENABLED
-#define PEDAL_ACTIVITY_LEDS_ENABLED 1
+#define PEDAL_ACTIVITY_LEDS_ENABLED 0
 #endif
 
 #if PEDAL_ACTIVITY_LEDS_ENABLED != 0 && PEDAL_ACTIVITY_LEDS_ENABLED != 1

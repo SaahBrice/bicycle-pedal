@@ -26,6 +26,9 @@ typedef struct {
 // Enable and validate the Cortex-M33 DWT cycle counter; returns 0 or -ENOTSUP.
 int pedal_timing_init(void);
 
+// Stop cycle counting between measurements; preserve an attached debugger's trace gate.
+void pedal_timing_suspend(void);
+
 // Start one interrupt-isolated algorithm measurement.
 PedalTimingStamp pedal_timing_begin(void);
 

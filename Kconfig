@@ -1,0 +1,5 @@
+mainmenu "Pedal benchmark"
+source "Kconfig.zephyr"
+config PEDAL_POWER_BUILD
+    bool "Build silent power measurement modes"
+    default n

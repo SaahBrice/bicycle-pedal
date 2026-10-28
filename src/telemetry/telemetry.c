@@ -340,9 +340,9 @@ int pedal_telemetry_final(const char *algorithm, uint32_t samples,
     if (rc < 0) {
         return rc;
     }
-    rc = send_formatted(PEDAL_MESSAGE_PLAIN,
+    /*rc = send_formatted(PEDAL_MESSAGE_PLAIN,
         "  coefficient setup: %llu [cycles], %.3f [us]",
-        (unsigned long long)setup_summary.total_cycles, setup_summary.total_us);
+        (unsigned long long)setup_summary.total_cycles, setup_summary.total_us);*/
     if (rc < 0) {
         return rc;
     }
@@ -353,7 +353,8 @@ int pedal_telemetry_final(const char *algorithm, uint32_t samples,
     if (rc < 0) {
         return rc;
     }
-    return send_formatted(PEDAL_MESSAGE_PLAIN,
+    /*return send_formatted(PEDAL_MESSAGE_PLAIN,
         "  total computation including setup: %llu [cycles], %.3f [us]",
-        (unsigned long long)total.total_cycles, total.total_us);
+        (unsigned long long)total.total_cycles, total.total_us);*/
+    return 0;
 }

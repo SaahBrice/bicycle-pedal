@@ -9,6 +9,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
+#include <zephyr/pm/device.h>
 
 #define PEDAL_UART_NODE DT_CHOSEN(zephyr_console)
 #define PEDAL_UART_TX_CAPACITY 2048u // [bytes] Queued output capacity.
@@ -23,6 +24,8 @@ static uint8_t tx_queue[PEDAL_UART_TX_CAPACITY];
 static volatile size_t tx_head;
 static volatile size_t tx_tail;
 static bool uart_initialized;
+static bool tx_busy;
+K_SEM_DEFINE(tx_idle, 0, 1);
 
 /* ------------------------------------------------------------------ */
 /* Creates: static void pedal_uart_isr(const struct device *device,   */
@@ -48,6 +51,8 @@ static void pedal_uart_isr(const struct device *device, void *user_data)
     while (uart_irq_tx_ready(device)) {
         if (tx_tail == tx_head) {
             uart_irq_tx_disable(device);
+            tx_busy = false;
+            k_sem_give(&tx_idle);
             break;
         }
         const size_t available = (tx_head - tx_tail) & PEDAL_UART_TX_MASK;
@@ -88,6 +93,7 @@ int pedal_communication_init(void)
     }
     tx_head = 0u;
     tx_tail = 0u;
+    tx_busy = false;
     uart_initialized = true;
     return 0;
 }
@@ -143,7 +149,45 @@ int pedal_communication_send(PedalMessageLevel level, const char *message)
     tx_head = (tx_head + 1u) & PEDAL_UART_TX_MASK;
     tx_queue[tx_head] = '\n';
     tx_head = (tx_head + 1u) & PEDAL_UART_TX_MASK;
+    tx_busy = true;
     uart_irq_tx_enable(pedal_uart);
     irq_unlock(key);
     return 0;
+}
+
+int pedal_communication_wait_idle(int timeout_ms)
+{
+    if (!uart_initialized || timeout_ms <= 0) {
+        return -EINVAL;
+    }
+    const int64_t deadline = k_uptime_get() + timeout_ms;
+    while (true) {
+        const unsigned int key = irq_lock();
+        const bool busy = tx_busy;
+        irq_unlock(key);
+        if (!busy) {
+            break;
+        }
+        const int64_t remaining = deadline - k_uptime_get();
+        if (remaining <= 0 || k_sem_take(&tx_idle, K_MSEC(remaining)) < 0) {
+            return -ETIMEDOUT;
+        }
+    }
+
+    // Queue completion precedes the driver's deferred runtime-PM release.
+    // This wait happens only at report boundaries, never once per sample.
+    while (true) {
+        enum pm_device_state state;
+        const int rc = pm_device_state_get(pedal_uart, &state);
+        if (rc < 0) {
+            return rc;
+        }
+        if (state == PM_DEVICE_STATE_SUSPENDED) {
+            return 0;
+        }
+        if (k_uptime_get() >= deadline) {
+            return -ETIMEDOUT;
+        }
+        k_sleep(K_MSEC(1));
+    }
 }

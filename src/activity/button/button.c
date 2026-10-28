@@ -4,12 +4,45 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 #define PEDAL_BUTTON_DEBOUNCE_MS 30
 static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
-static int candidate_state;
+K_SEM_DEFINE(button_event, 0, 1);
 static int stable_state;
-static int64_t changed_ms;
+static atomic_t pending_presses;
+static atomic_t read_error;
+static struct gpio_callback button_callback;
+
+// Sample the logical pin value only after the contact has settled.
+static void debounce(struct k_work *work)
+{
+    (void)work;
+    const int state = gpio_pin_get_dt(&button);
+    if (state < 0) {
+        atomic_set(&read_error, state);
+        return;
+    }
+    if (state != stable_state) {
+        stable_state = state;
+        if (state) {
+            atomic_inc(&pending_presses);
+            k_sem_give(&button_event);
+        }
+    }
+}
+
+K_WORK_DELAYABLE_DEFINE(debounce_work, debounce);
+
+static void button_changed(const struct device *port, struct gpio_callback *cb,
+                           gpio_port_pins_t pins)
+{
+    (void)port;
+    (void)cb;
+    (void)pins;
+    // Each bounce restarts the settling interval; no periodic polling is needed.
+    k_work_reschedule(&debounce_work, K_MSEC(PEDAL_BUTTON_DEBOUNCE_MS));
+}
 
 int pedal_button_init(void)
 {
@@ -24,26 +57,39 @@ int pedal_button_init(void)
     if (rc < 0) {
         return rc;
     }
-    candidate_state = stable_state = rc;
-    changed_ms = k_uptime_get();
-    return 0;
+    stable_state = rc;
+    atomic_clear(&pending_presses);
+    atomic_clear(&read_error);
+    gpio_init_callback(&button_callback, button_changed, BIT(button.pin));
+    rc = gpio_add_callback(button.port, &button_callback);
+    if (rc < 0) {
+        return rc;
+    }
+    rc = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_BOTH);
+    if (rc < 0) {
+        gpio_remove_callback(button.port, &button_callback);
+    }
+    return rc;
 }
 
 int pedal_button_poll(void)
 {
-    const int state = gpio_pin_get_dt(&button);
-    if (state < 0) {
-        return state;
+    const int error = atomic_set(&read_error, 0);
+    if (error < 0) {
+        return error;
     }
-    const int64_t now = k_uptime_get();
-    if (state != candidate_state) {
-        candidate_state = state;
-        changed_ms = now;
-    }
-    if (candidate_state != stable_state &&
-        now - changed_ms >= PEDAL_BUTTON_DEBOUNCE_MS) {
-        stable_state = candidate_state;
-        return stable_state ? 1 : 0;
-    }
-    return 0;
+    // Consume one event; an unpressed button costs no GPIO or clock reads.
+    atomic_val_t count;
+    do {
+        count = atomic_get(&pending_presses);
+        if (count == 0) {
+            return 0;
+        }
+    } while (!atomic_cas(&pending_presses, count, count - 1));
+    return 1;
+}
+
+void pedal_button_wait(void)
+{
+    k_sem_take(&button_event, K_FOREVER);
 }

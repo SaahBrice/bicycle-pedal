@@ -1,167 +1,199 @@
 #include <errno.h>
-#include <stdbool.h>
+#include <math.h>
+#include <stdio.h>
 #include <zephyr/kernel.h>
-
+#include <zephyr/drivers/gpio.h>
 #include "algorithms/algorithms.h"
 #include "activity/activity.h"
 #include "activity/button/button.h"
-#include "communication/communication.h"
 #include "configuration/configuration.h"
 #include "configuration/constants.h"
-#include "revolution/revolution.h"
 #include "sensors/sensors.h"
-#include "telemetry/telemetry.h"
+#ifndef CONFIG_PEDAL_POWER_BUILD
+#include "communication/communication.h"
+#include "revolution/revolution.h"
 #include "timing/timing.h"
+#endif
 
-/*
- * Replays the lookup table continuously at 200 Hz, starting in standard mode.
- * Button 0 selects the other algorithm and restarts from the first sample.
- * Each completed replay reports only its selected algorithm. Simplified
- * coefficients are prepared once at the start of every simplified replay.
- * Output: returns a negative error code if initialization or replay fails.
- */
-int main(void)
+static const struct gpio_dt_spec marker = GPIO_DT_SPEC_GET(DT_NODELABEL(marker), gpios);
+// Keep computed outputs observable in the silent build too.
+static volatile PedalResult last_result;
+#ifdef CONFIG_PEDAL_POWER_BUILD
+enum mode { SLEEP, STANDARD_CONTINUOUS, SIMPLIFIED_CONTINUOUS,
+            STANDARD_DUTY, SIMPLIFIED_DUTY, BOTH_DUTY, MODE_COUNT };
+static volatile enum mode current_mode;
+
+static int run(const PedalCalibration *cal)
 {
-    PedalCalibration cal;
-    bool simplified_mode = false;
-    bool announce_switch = false;
-    int rc = pedal_communication_init();
-    if (rc < 0) {
-        return rc;
+    PedalSensorSource source;
+    PedalSimplifiedCoefficients coeff;
+    PedalSensorSample sample;
+    PedalResult result;
+    bool restart = true;
+    int64_t deadline = 0;
+    while (true) {
+        int rc = pedal_button_poll();
+        if (rc < 0) { return rc; }
+        if (rc > 0) {
+            gpio_pin_set_dt(&marker, 0);
+            current_mode = (current_mode + 1) % MODE_COUNT;
+            restart = true;
+        }
+        if (current_mode == SLEEP) {
+            // Block until a debounced press; no periodic application wakeup.
+            pedal_button_wait();
+            continue;
+        }
+        const bool both = current_mode == BOTH_DUTY;
+        const bool simplified = current_mode == SIMPLIFIED_CONTINUOUS ||
+                                current_mode == SIMPLIFIED_DUTY || both;
+        const bool duty = current_mode >= STANDARD_DUTY;
+        if (restart) {
+            pedal_sensors_reset(&source);
+            deadline = k_uptime_get();
+            gpio_pin_set_dt(&marker, !duty);
+            if (simplified && (rc = pedal_simplified_prepare(cal, &coeff)) < 0) { return rc; }
+            restart = false;
+        }
+        rc = pedal_sensors_next(&source, &sample);
+        if (rc < 0) { return rc; }
+        if (rc == 0) {
+            // Preserve cadence across wrap; prepare coefficients once per replay.
+            pedal_sensors_reset(&source);
+            if (simplified && (rc = pedal_simplified_prepare(cal, &coeff)) < 0) { return rc; }
+            rc = pedal_sensors_next(&source, &sample);
+            if (rc <= 0) { return -ENODATA; }
+        }
+        if (duty) { gpio_pin_set_dt(&marker, 1); }
+        rc = (simplified && !both) ? pedal_simplified_process(&sample, &coeff, &result) :
+                          pedal_standard_process(&sample, cal, &result);
+        if (duty) { gpio_pin_set_dt(&marker, 0); }
+        if (rc < 0) { return rc; }
+        last_result = result;
+        if (both) {
+            // Same input, second pulse: simplified follows standard without a delay.
+            gpio_pin_set_dt(&marker, 1);
+            rc = pedal_simplified_process(&sample, &coeff, &result);
+            gpio_pin_set_dt(&marker, 0);
+            if (rc < 0) { return rc; }
+            last_result = result;
+        }
+        if (duty) {
+            deadline += PEDAL_SAMPLE_PERIOD_MS;
+            k_sleep(K_TIMEOUT_ABS_MS(deadline));
+        }
     }
-    rc = pedal_activity_init();
-    if (rc < 0) {
-        pedal_telemetry_error("LED activity", 0u, rc);
-        return rc;
-    }
-    rc = pedal_button_init();
-    if (rc < 0) {
-        pedal_telemetry_error("button", 0u, rc);
-        return rc;
-    }
-    rc = pedal_timing_init();
-    if (rc < 0) {
-        pedal_telemetry_error("cycle counter", 0u, rc);
-        return rc;
-    }
-    rc = pedal_configuration_load(&cal);
-    if (rc < 0) {
-        pedal_telemetry_error("configuration", 0u, rc);
-        return rc;
-    }
+}
+#else
+struct difference { double sum, absolute, squares, maximum; };
+static void add_difference(struct difference *s, double d)
+{
+    s->sum += d;
+    s->absolute += fabs(d);
+    s->squares += d*d;
+    if (fabs(d) > s->maximum) { s->maximum = fabs(d); }
+}
 
+// Report only after both timed calls have finished.
+static int report(uint32_t revolution, const PedalTimingStats timing[2],
+                  const struct difference differences[3])
+{
+    char line[240];
+    snprintf(line, sizeof(line), "Revolution %u: %u samples; differences = simplified - standard",
+             revolution, timing[0].calls);
+    int rc = pedal_communication_send(PEDAL_MESSAGE_PLAIN, line);
+    if (rc < 0) { return rc; }
+    for (int i = 0; i < 2; ++i) {
+        PedalTimingSummary s;
+        rc = pedal_timing_summarize(&timing[i], &s);
+        if (rc < 0) { return rc; }
+        snprintf(line, sizeof(line), "%s: sample %.2f cycles, %.3f us; revolution %llu cycles, %.3f us",
+                 i ? "simplified" : "standard", s.average_cycles, s.average_us,
+                 (unsigned long long)s.total_cycles, s.total_us);
+        rc = pedal_communication_send(PEDAL_MESSAGE_PLAIN, line);
+        if (rc < 0) { return rc; }
+    }
+    const char *names[] = {"torque [Nm]", "power [W]", "omega [rad/s]"};
+    for (int i = 0; i < 3; ++i) {
+        const struct difference *d = &differences[i];
+        const double n = timing[0].calls;
+        snprintf(line, sizeof(line), "%s: bias %.8f, MAE %.8f, RMSE %.8f, max absolute %.8f",
+                 names[i], d->sum/n, d->absolute/n, sqrt(d->squares/n), d->maximum);
+        rc = pedal_communication_send(PEDAL_MESSAGE_PLAIN, line);
+        if (rc < 0) { return rc; }
+    }
+    // One empty line separates completed revolution reports.
+    rc = pedal_communication_send(PEDAL_MESSAGE_PLAIN, "");
+    if (rc < 0) { return rc; }
+    return pedal_communication_wait_idle(1000);
+}
+
+static int run(const PedalCalibration *cal)
+{
+    int rc = pedal_communication_init();
+    if (rc < 0) { return rc; }
+    rc = pedal_timing_init();
+    if (rc < 0) { return rc; }
     while (true) {
         PedalSimplifiedCoefficients coeff;
         PedalSensorSource source;
+        PedalSensorSample sample;
         PedalRevolutionTracker tracker;
-        PedalSensorSample sample = {0};
-        PedalResult result;
-        PedalSummary summary;
-        PedalTimingStats total = {0};
-        PedalTimingStats turn = {0};
-        PedalTimingStats full_revs = {0};
-        PedalTimingStats setup = {0};
-        bool restart = false;
-        const char *error_component = "sensors";
-
-        rc = pedal_button_poll();
-        if (rc < 0) {
-            pedal_telemetry_error("button", 0u, rc);
-            return rc;
-        }
-        if (rc > 0) {
-            simplified_mode = !simplified_mode;
-            announce_switch = true;
-        }
-        const char *algorithm = simplified_mode ? "simplified" : "standard";
-        if (announce_switch) {
-            rc = pedal_telemetry_status(PEDAL_MESSAGE_PLAIN,
-                simplified_mode ? "Switched to simplified algorithm" :
-                                  "Switched to standard algorithm");
-            if (rc < 0) {
-                return rc;
-            }
-            announce_switch = false;
-        }
-        pedal_activity_processing_start(simplified_mode);
-        if (simplified_mode) {
-            const PedalTimingStamp stamp = pedal_timing_begin();
-            rc = pedal_simplified_prepare(&cal, &coeff);
-            const uint32_t cycles = pedal_timing_end(stamp, &setup);
-            if (rc < 0 || cycles == 0u) {
-                pedal_activity_processing_stop();
-                rc = rc < 0 ? rc : -ENOTSUP;
-                pedal_telemetry_error("algorithm setup", 0u, rc);
-                return rc;
-            }
-        }
+        PedalSummary completed;
+        PedalTimingStats timing[2] = {0};
+        struct difference differences[3] = {0};
+        rc = pedal_simplified_prepare(cal, &coeff);
+        if (rc < 0) { return rc; }
         pedal_sensors_reset(&source);
         pedal_revolution_reset(&tracker);
-        const int64_t replay_start_ms = k_uptime_get();
-        uint32_t replay_step = 0u;
         while ((rc = pedal_sensors_next(&source, &sample)) > 0) {
-            const int64_t deadline_ms = replay_start_ms +
-                (int64_t)replay_step * PEDAL_SAMPLE_PERIOD_MS;
-            k_sleep(K_TIMEOUT_ABS_MS(deadline_ms));
-            replay_step++;
-
-            rc = pedal_button_poll();
-            if (rc < 0) {
-                error_component = "button";
-                break;
+            PedalResult results[2];
+            // Two scope pulses per sample: standard first, simplified second.
+            for (int i = 0; i < 2; ++i) {
+                gpio_pin_set_dt(&marker, 1);
+                PedalTimingStamp stamp = pedal_timing_begin();
+                rc = i ? pedal_simplified_process(&sample, &coeff, &results[i]) :
+                         pedal_standard_process(&sample, cal, &results[i]);
+                const uint32_t cycles = pedal_timing_end(stamp, &timing[i]);
+                gpio_pin_set_dt(&marker, 0);
+                if (rc < 0) { return rc; }
+                if (!cycles) { return -ENOTSUP; }
             }
+            last_result = results[1];
+            add_difference(&differences[0], (double)results[1].torque_Nm-(double)results[0].torque_Nm);
+            add_difference(&differences[1], (double)results[1].power_W-(double)results[0].power_W);
+            add_difference(&differences[2], (double)results[1].omega_rad_s-(double)results[0].omega_rad_s);
+            // Shared standard-derived boundaries keep the compared sample sets equal.
+            rc = pedal_revolution_add(&tracker, &sample, &results[0], &completed);
+            if (rc < 0) { return rc; }
+            pedal_timing_suspend();
             if (rc > 0) {
-                simplified_mode = !simplified_mode;
-                announce_switch = true;
-                restart = true;
-                break;
-            }
-
-            uint32_t cycles;
-            if (simplified_mode) {
-                const PedalTimingStamp stamp = pedal_timing_begin();
-                rc = pedal_simplified_process(&sample, &coeff, &result);
-                cycles = pedal_timing_end(stamp, &total);
-            } else {
-                const PedalTimingStamp stamp = pedal_timing_begin();
-                rc = pedal_standard_process(&sample, &cal, &result);
-                cycles = pedal_timing_end(stamp, &total);
-            }
-            if (cycles == 0u) {
-                error_component = "cycle counter";
-                rc = -ENOTSUP;
-                break;
-            }
-            if (rc < 0) {
-                error_component = algorithm;
-                break;
-            }
-            pedal_timing_record(&turn, cycles);
-            rc = pedal_revolution_add(&tracker, &sample, &result, &summary);
-            if (rc < 0) {
-                error_component = "revolution";
-                break;
-            }
-            if (rc > 0) {
-                pedal_activity_revolution();
-                pedal_timing_merge(&full_revs, &turn);
-                turn = (PedalTimingStats){0};
+                rc = report(tracker.complete_revolutions, timing, differences);
+                if (rc < 0) { return rc; }
+                timing[0] = timing[1] = (PedalTimingStats){0};
+                for (int i = 0; i < 3; ++i) { differences[i] = (struct difference){0}; }
             }
         }
-        pedal_activity_processing_stop();
-        if (restart) {
-            continue;
-        }
-        if (rc < 0) {
-            pedal_telemetry_error(error_component, sample.sample_index, rc);
-            return rc;
-        }
-        pedal_activity_table_complete();
-        rc = pedal_telemetry_final(algorithm, tracker.total_samples,
-                                   tracker.complete_revolutions, &total,
-                                   &full_revs, simplified_mode ? &setup : NULL);
-        if (rc < 0) {
-            return rc;
-        }
+        if (rc < 0) { return rc; }
+        // Add two empty lines to the last report's separator: three at table end.
+        rc = pedal_communication_send(PEDAL_MESSAGE_PLAIN, "\r\n");
+        if (rc < 0) { return rc; }
+        rc = pedal_communication_wait_idle(1000);
+        if (rc < 0) { return rc; }
+        // An incomplete final revolution is discarded at table wrap.
     }
+}
+#endif
+
+int main(void)
+{
+    PedalCalibration cal;
+    int rc = pedal_activity_init();
+    if (rc == 0) { rc = pedal_button_init(); }
+    if (rc == 0 && !gpio_is_ready_dt(&marker)) { rc = -ENODEV; }
+    if (rc == 0) { rc = gpio_pin_configure_dt(&marker, GPIO_OUTPUT_INACTIVE); }
+    if (rc == 0) { rc = pedal_configuration_load(&cal); }
+    if (rc == 0) { rc = run(&cal); }
+    gpio_pin_set_dt(&marker, 0);
+    return rc;
 }

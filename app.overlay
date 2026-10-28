@@ -1,0 +1,21 @@
+/* This application sends reports but never receives UART data. Disabling RX
+ * lets the nRF UARTE driver turn the peripheral off between transmissions.
+ */
+&uart20 {
+	disable-rx;
+	zephyr,pm-device-runtime-auto;
+};
+
+/* Button 0 is P1.13. Use GPIO SENSE/PORT events for button edges rather than
+ * allocating a continuously active GPIOTE input channel.
+ */
+&gpio1 {
+	sense-edge-mask = <0x2000>;
+};
+
+/ {
+    scope_marker {
+        compatible = "gpio-leds";
+        marker: marker { gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>; };
+    };
+};
