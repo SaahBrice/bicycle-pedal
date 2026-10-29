@@ -3,8 +3,6 @@
 Branch: `investigate/power-profile`. Target: nRF54L15 DK application core,
 nRF Connect SDK 3.2.4.
 
-
-
 ## Power build
 
 Starts in Sleep. Each button-0 press advances:
@@ -17,6 +15,10 @@ Starts in Sleep. Each button-0 press advances:
 6. Both algorithms duty-cycled, 200 Hz (standard then simplified per sample).
 7. Back to Sleep.
 
-Every mode change restarts the input table. 
+Every mode change restarts the input table.
 
-Scope marker: **P1.11**, active high, with board GND as reference. 
+
+Scope marker: **P1.11**, active high, with board GND as reference.
+
+In the power build, P1.11 stays high during continuous modes and pulses around
+each computation in duty-cycled modes when enabled.

@@ -68,9 +68,9 @@ int pedal_gpio_cleanup(void)
             if ((port->available & BIT(pin)) == 0u || preserve_pin(port, pin)) {
                 continue;
             }
-            const int rc = gpio_pin_configure(port->device, pin, GPIO_DISCONNECTED);
-            if (rc < 0) {
-                return rc;
+            const int pin_status = gpio_pin_configure(port->device, pin, GPIO_DISCONNECTED);
+            if (pin_status < 0) {
+                return pin_status;
             }
         }
     }

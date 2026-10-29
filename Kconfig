@@ -3,3 +3,10 @@ source "Kconfig.zephyr"
 config PEDAL_POWER_BUILD
     bool "Build silent power measurement modes"
     default n
+
+config PEDAL_SCOPE_MARKER
+    bool "Pulse P1.11 around computations"
+    default y
+    help
+      Enable the scope marker in both build types. Disable it to leave P1.11
+      disconnected and remove its GPIO writes from the processing path.

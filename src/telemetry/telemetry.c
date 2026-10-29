@@ -219,17 +219,17 @@ int pedal_telemetry_timing_pair(const char *scope, uint32_t revolution,
                                 const PedalTimingStats *simplified)
 {
     PedalTimingSummary summary;
-    int rc = pedal_timing_summarize(standard, &summary);
-    if (rc < 0) {
-        return rc;
+    int standard_summary_status = pedal_timing_summarize(standard, &summary);
+    if (standard_summary_status < 0) {
+        return standard_summary_status;
     }
-    rc = pedal_telemetry_timing(scope, revolution, "standard", &summary);
-    if (rc < 0) {
-        return rc;
+    int standard_report_status = pedal_telemetry_timing(scope, revolution, "standard", &summary);
+    if (standard_report_status < 0) {
+        return standard_report_status;
     }
-    rc = pedal_timing_summarize(simplified, &summary);
-    if (rc < 0) {
-        return rc;
+    int simplified_summary_status = pedal_timing_summarize(simplified, &summary);
+    if (simplified_summary_status < 0) {
+        return simplified_summary_status;
     }
     return pedal_telemetry_timing(scope, revolution, "simplified", &summary);
 }
@@ -283,23 +283,23 @@ static int report_algorithm(const char *name, uint32_t revolutions,
 {
     PedalTimingSummary per_sample;
     PedalTimingSummary full_summary;
-    int rc = pedal_timing_summarize(all, &per_sample);
-    if (rc < 0) {
-        return rc;
+    int sample_summary_status = pedal_timing_summarize(all, &per_sample);
+    if (sample_summary_status < 0) {
+        return sample_summary_status;
     }
-    rc = pedal_timing_summarize(full, &full_summary);
-    if (rc < 0 || revolutions == 0u) {
-        return rc < 0 ? rc : -ENODATA;
+    int revolution_summary_status = pedal_timing_summarize(full, &full_summary);
+    if (revolution_summary_status < 0 || revolutions == 0u) {
+        return revolution_summary_status < 0 ? revolution_summary_status : -ENODATA;
     }
-    rc = send_formatted(PEDAL_MESSAGE_PLAIN, "%s", name);
-    if (rc < 0) {
-        return rc;
+    int heading_status = send_formatted(PEDAL_MESSAGE_PLAIN, "%s", name);
+    if (heading_status < 0) {
+        return heading_status;
     }
-    rc = send_formatted(PEDAL_MESSAGE_PLAIN,
+    int sample_report_status = send_formatted(PEDAL_MESSAGE_PLAIN,
                         "  average per sample: %.2f [cycles], %.3f [us]",
                         per_sample.average_cycles, per_sample.average_us);
-    if (rc < 0) {
-        return rc;
+    if (sample_report_status < 0) {
+        return sample_report_status;
     }
     return send_formatted(PEDAL_MESSAGE_PLAIN,
                           "  average per revolution: %.2f [cycles], %.3f [us]",
@@ -323,35 +323,32 @@ int pedal_telemetry_final(const char *algorithm, uint32_t samples,
     if (algorithm == NULL || all == NULL || full == NULL) {
         return -EINVAL;
     }
-    int rc = send_formatted(PEDAL_MESSAGE_PLAIN,
+    int heading_status = send_formatted(PEDAL_MESSAGE_PLAIN,
                             "samples=%u sampling_frequency=%u [Hz] revolutions=%u",
                             (unsigned int)samples,
                             (unsigned int)PEDAL_SAMPLE_RATE_HZ,
                             (unsigned int)revolutions);
-    if (rc < 0) {
-        return rc;
+    if (heading_status < 0) {
+        return heading_status;
     }
-    rc = report_algorithm(algorithm, revolutions, all, full);
-    if (rc < 0 || setup == NULL) {
-        return rc;
+    int algorithm_report_status = report_algorithm(algorithm, revolutions, all, full);
+    if (algorithm_report_status < 0 || setup == NULL) {
+        return algorithm_report_status;
     }
     PedalTimingSummary setup_summary;
-    rc = pedal_timing_summarize(setup, &setup_summary);
-    if (rc < 0) {
-        return rc;
+    int setup_summary_status = pedal_timing_summarize(setup, &setup_summary);
+    if (setup_summary_status < 0) {
+        return setup_summary_status;
     }
-    /*rc = send_formatted(PEDAL_MESSAGE_PLAIN,
+    /*setup_report_status = send_formatted(PEDAL_MESSAGE_PLAIN,
         "  coefficient setup: %llu [cycles], %.3f [us]",
         (unsigned long long)setup_summary.total_cycles, setup_summary.total_us);*/
-    if (rc < 0) {
-        return rc;
-    }
     PedalTimingStats combined = *all;
     pedal_timing_merge(&combined, setup);
     PedalTimingSummary total;
-    rc = pedal_timing_summarize(&combined, &total);
-    if (rc < 0) {
-        return rc;
+    int total_summary_status = pedal_timing_summarize(&combined, &total);
+    if (total_summary_status < 0) {
+        return total_summary_status;
     }
     /*return send_formatted(PEDAL_MESSAGE_PLAIN,
         "  total computation including setup: %llu [cycles], %.3f [us]",

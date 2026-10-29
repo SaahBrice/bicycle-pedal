@@ -91,9 +91,9 @@ static void table_pulse_end(struct k_work *work)
 /* ------------------------------------------------------------------ */
 int pedal_activity_init(void)
 {
-    int rc = pedal_gpio_cleanup();
-    if (rc < 0) {
-        return rc;
+    int cleanup_status = pedal_gpio_cleanup();
+    if (cleanup_status < 0) {
+        return cleanup_status;
     }
     if (!gpio_is_ready_dt(&standard_led) ||
         !gpio_is_ready_dt(&simplified_led) ||
@@ -101,21 +101,38 @@ int pedal_activity_init(void)
         !gpio_is_ready_dt(&table_led)) {
         return -ENODEV;
     }
-    rc = gpio_pin_configure_dt(&standard_led, GPIO_OUTPUT_INACTIVE);
-    if (rc < 0) {
-        return rc;
+
+    // Power profiling never uses LEDs. Disconnect their pins so no LED GPIO
+    // remains driven while the CPU waits for the next sample or button press.
+    if (IS_ENABLED(CONFIG_PEDAL_POWER_BUILD)) {
+        const struct gpio_dt_spec *leds[] = {
+            &standard_led, &simplified_led, &revolution_led, &table_led,
+        };
+        for (size_t index = 0; index < ARRAY_SIZE(leds); ++index) {
+            int led_status = gpio_pin_configure_dt(leds[index], GPIO_DISCONNECTED);
+            if (led_status < 0) {
+                return led_status;
+            }
+        }
+        initialized = false;
+        return 0;
     }
-    rc = gpio_pin_configure_dt(&simplified_led, GPIO_OUTPUT_INACTIVE);
-    if (rc < 0) {
-        return rc;
+
+    int standard_led_status = gpio_pin_configure_dt(&standard_led, GPIO_OUTPUT_INACTIVE);
+    if (standard_led_status < 0) {
+        return standard_led_status;
     }
-    rc = gpio_pin_configure_dt(&revolution_led, GPIO_OUTPUT_INACTIVE);
-    if (rc < 0) {
-        return rc;
+    int simplified_led_status = gpio_pin_configure_dt(&simplified_led, GPIO_OUTPUT_INACTIVE);
+    if (simplified_led_status < 0) {
+        return simplified_led_status;
     }
-    rc = gpio_pin_configure_dt(&table_led, GPIO_OUTPUT_INACTIVE);
-    if (rc < 0) {
-        return rc;
+    int revolution_led_status = gpio_pin_configure_dt(&revolution_led, GPIO_OUTPUT_INACTIVE);
+    if (revolution_led_status < 0) {
+        return revolution_led_status;
+    }
+    int table_led_status = gpio_pin_configure_dt(&table_led, GPIO_OUTPUT_INACTIVE);
+    if (table_led_status < 0) {
+        return table_led_status;
     }
     initialized = true;
     return 0;

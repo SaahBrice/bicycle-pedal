@@ -49,27 +49,27 @@ int pedal_button_init(void)
     if (!gpio_is_ready_dt(&button)) {
         return -ENODEV;
     }
-    int rc = gpio_pin_configure_dt(&button, GPIO_INPUT);
-    if (rc < 0) {
-        return rc;
+    int configure_status = gpio_pin_configure_dt(&button, GPIO_INPUT);
+    if (configure_status < 0) {
+        return configure_status;
     }
-    rc = gpio_pin_get_dt(&button);
-    if (rc < 0) {
-        return rc;
+    int button_state = gpio_pin_get_dt(&button);
+    if (button_state < 0) {
+        return button_state;
     }
-    stable_state = rc;
+    stable_state = button_state;
     atomic_clear(&pending_presses);
     atomic_clear(&read_error);
     gpio_init_callback(&button_callback, button_changed, BIT(button.pin));
-    rc = gpio_add_callback(button.port, &button_callback);
-    if (rc < 0) {
-        return rc;
+    int callback_status = gpio_add_callback(button.port, &button_callback);
+    if (callback_status < 0) {
+        return callback_status;
     }
-    rc = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_BOTH);
-    if (rc < 0) {
+    int interrupt_status = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_BOTH);
+    if (interrupt_status < 0) {
         gpio_remove_callback(button.port, &button_callback);
     }
-    return rc;
+    return interrupt_status;
 }
 
 int pedal_button_poll(void)

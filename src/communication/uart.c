@@ -86,10 +86,10 @@ int pedal_communication_init(void)
     if (uart_initialized) {
         return 0;
     }
-    const int rc = uart_irq_callback_user_data_set(pedal_uart, pedal_uart_isr,
+    const int callback_status = uart_irq_callback_user_data_set(pedal_uart, pedal_uart_isr,
                                                    NULL);
-    if (rc < 0) {
-        return rc;
+    if (callback_status < 0) {
+        return callback_status;
     }
     tx_head = 0u;
     tx_tail = 0u;
@@ -178,9 +178,9 @@ int pedal_communication_wait_idle(int timeout_ms)
     // This wait happens only at report boundaries, never once per sample.
     while (true) {
         enum pm_device_state state;
-        const int rc = pm_device_state_get(pedal_uart, &state);
-        if (rc < 0) {
-            return rc;
+        const int state_status = pm_device_state_get(pedal_uart, &state);
+        if (state_status < 0) {
+            return state_status;
         }
         if (state == PM_DEVICE_STATE_SUSPENDED) {
             return 0;
